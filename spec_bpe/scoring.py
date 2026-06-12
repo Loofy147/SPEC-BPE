@@ -3,8 +3,8 @@ import numpy as np
 class MatrixScorer:
     """
     Non-commutative Matrix BPE (The "Spinor" Tokenizer)
-    Maps tokens to SL(2, C) matrices. Merges are matrix products.
-    Scoring is based on the Trace or Spectral Radius.
+    Maps tokens to SL(2, C) matrices.
+    Implements Holonomic Path dependence.
     """
     def __init__(self, seed=42):
         self.rng = np.random.default_rng(seed)
@@ -12,7 +12,6 @@ class MatrixScorer:
 
     def _get_matrix(self, token_id):
         if token_id not in self.token_matrices:
-            # Generate a random SL(2, C) matrix: det(M) = 1
             a = self.rng.standard_normal() + 1j * self.rng.standard_normal()
             b = self.rng.standard_normal() + 1j * self.rng.standard_normal()
             c = self.rng.standard_normal() + 1j * self.rng.standard_normal()
@@ -26,46 +25,47 @@ class MatrixScorer:
         M_B = self._get_matrix(pair[1])
         M_AB = M_A @ M_B
 
-        # Scoring based on Trace or Spectral Radius
-        # Tr(M) = sum(eigenvalues)
+        # Holonomic loop check: Does M_AB return to Identity?
+        # dist(M_AB, I)
+        identity = np.eye(2, dtype=complex)
+        holonomy_dist = np.linalg.norm(M_AB - identity)
+
+        # Trace scoring
         trace = np.trace(M_AB)
 
-        # A merge is "stable" if the resulting operator has a high trace (cohesive)
-        return float(np.abs(trace))
+        # High trace = cohesive. Small holonomy_dist = semantically closed.
+        return float(np.abs(trace)) + 1.0 / (holonomy_dist + 1e-5)
 
     def register_merge(self, pair, new_id):
         M_A = self._get_matrix(pair[0])
         M_B = self._get_matrix(pair[1])
         self.token_matrices[new_id] = M_A @ M_B
 
-class GeometricScorer:
+class GeometricPressureScorer:
     """
-    Information-Geometric BPE (The Geodesic Path)
-    Uses the Fisher-Rao Geodesic Distance on the probability manifold.
-    d_FR(p, q) = 2 * arccos(sum(sqrt(p_i * q_i)))
+    Information-Geometric BPE with Geometric Pressure Constraint.
+    L = d_FR(p, q) + lambda * H(V)
     """
-    def __init__(self, epsilon=1e-10):
+    def __init__(self, lambd=0.1, epsilon=1e-10):
+        self.lambd = lambd
         self.epsilon = epsilon
 
     def score(self, pair, pair_freq, id_freqs, total_count):
-        # We need p_A, p_B, and p_AB (the "joint" distribution)
-        # For simplicity, we model the contextual distributions p, q as
-        # simplified 2D distributions [p_i, 1-p_i] representing
-        # (occurrence, non-occurrence) of the token in the corpus.
-
         p_A = max(self.epsilon, id_freqs.get(pair[0], 0) / total_count)
         p_B = max(self.epsilon, id_freqs.get(pair[1], 0) / total_count)
         p_AB = max(self.epsilon, pair_freq / total_count)
 
-        # Helper to compute d_FR between two Bernoulli(p) distributions
         def d_fr_bernoulli(p, q):
-            # sum(sqrt(p_i * q_i)) = sqrt(p*q) + sqrt((1-p)*(1-q))
             inner = np.sqrt(p * q) + np.sqrt((1 - p) * (1 - q))
             inner = np.clip(inner, -1.0, 1.0)
             return 2.0 * np.arccos(inner)
 
-        # Score_Geodesic = 1 / (d_FR(p_A, p_AB) + d_FR(p_B, p_AB))
-        dist_A = d_fr_bernoulli(p_A, p_AB)
-        dist_B = d_fr_bernoulli(p_B, p_AB)
+        dist = d_fr_bernoulli(p_A, p_AB) + d_fr_bernoulli(p_B, p_AB)
 
-        return 1.0 / (dist_A + dist_B + self.epsilon)
+        # Entropy of the pair occurrence (surrogate for H(V) change)
+        entropy = -p_AB * np.log(p_AB) - (1-p_AB)*np.log(1-p_AB+self.epsilon)
+
+        # Pressure: Minimize distance but penalize entropy collapse
+        # We want small dist and large entropy retention.
+        # Score = 1 / (dist + lambda * entropy)
+        return 1.0 / (dist + self.lambd * entropy + self.epsilon)

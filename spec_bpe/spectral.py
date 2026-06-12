@@ -3,15 +3,15 @@ import networkx as nx
 
 class SpectralFilter:
     """
-    Negato-Spectral BPE (Exclusion via Eigenvalues)
-    Uses the Laplacian Spectrum of the co-occurrence graph to identify
-    structural boundaries.
+    Negato-Spectral BPE with Renormalization Group (RG) Flow monitoring.
+    Monitors the Spectral Gap (lambda_2 - lambda_1) to prevent over-tokenization.
     """
-    def __init__(self):
+    def __init__(self, gap_threshold=0.01):
         self.boundaries = set()
+        self.spectral_gap = 1.0
+        self.gap_threshold = gap_threshold
 
     def update_boundaries(self, ids, vocab_size):
-        # Construct co-occurrence graph
         G = nx.Graph()
         for i in range(len(ids) - 1):
             u, v = ids[i], ids[i+1]
@@ -20,36 +20,35 @@ class SpectralFilter:
             else:
                 G.add_edge(u, v, weight=1)
 
-        if len(G) < 2:
+        if len(G) < 3:
             return
 
-        # Compute Laplacian Spectrum
-        # We look for the Fiedler vector (eigenvector of the second smallest eigenvalue)
-        # to find the "cut" or boundary.
         try:
             L = nx.laplacian_matrix(G).toarray().astype(float)
             eigenvalues, eigenvectors = np.linalg.eigh(L)
 
-            # Second smallest eigenvalue index is usually 1 (0 is always 0)
+            # lambda_1 is usually 0. lambda_2 is the Fiedler eigenvalue.
+            lambda_1 = eigenvalues[0]
+            lambda_2 = eigenvalues[1]
+            self.spectral_gap = lambda_2 - lambda_1
+
             fiedler_vec = eigenvectors[:, 1]
             nodes = list(G.nodes())
 
-            # Partition nodes based on sign of Fiedler vector
-            part1 = [nodes[i] for i, val in enumerate(fiedler_vec) if val > 0]
-            part2 = [nodes[i] for i, val in enumerate(fiedler_vec) if val <= 0]
+            p1_set = {nodes[i] for i, val in enumerate(fiedler_vec) if val > 0}
+            p2_set = {nodes[i] for i, val in enumerate(fiedler_vec) if val <= 0}
 
-            # Boundaries are edges between partitions
             self.boundaries = set()
-            p1_set = set(part1)
-            p2_set = set(part2)
-
             for u, v in G.edges():
                 if (u in p1_set and v in p2_set) or (u in p2_set and v in p1_set):
                     self.boundaries.add((u, v))
                     self.boundaries.add((v, u))
         except Exception:
-            # Fallback if spectral decomposition fails
             pass
 
     def is_forbidden(self, pair):
-        return pair in self.boundaries
+        # Merge is forbidden if it crosses a boundary OR if the spectral gap collapsed
+        return (pair in self.boundaries) or (self.spectral_gap < self.gap_threshold)
+
+    def get_rg_state(self):
+        return self.spectral_gap

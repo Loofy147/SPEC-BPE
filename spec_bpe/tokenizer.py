@@ -1,18 +1,18 @@
 import numpy as np
 from .utils import get_stats, merge
-from .scoring import MatrixScorer, GeometricScorer
+from .scoring import MatrixScorer, GeometricPressureScorer
 from .algebraic import AlgebraicScorer
 from .spectral import SpectralFilter
 
 class SpecTokenizer:
-    def __init__(self, vocab_size=300, gamma=0.5):
+    def __init__(self, vocab_size=300, gamma=0.5, lambd=0.1):
         self.vocab_size = vocab_size
-        self.gamma = gamma # Boundary penalty hyperparameter
-        self.merges = {} # (int, int) -> int
+        self.gamma = gamma
+        self.merges = {}
         self.vocab = {i: bytes([i]) for i in range(256)}
 
         self.matrix_scorer = MatrixScorer()
-        self.geom_scorer = GeometricScorer()
+        self.geom_scorer = GeometricPressureScorer(lambd=lambd)
         self.alg_scorer = AlgebraicScorer()
         self.spec_filter = SpectralFilter()
 
@@ -30,8 +30,10 @@ class SpecTokenizer:
             if not stats:
                 break
 
-            # Update spectral boundaries occasionally
-            if i % 10 == 0:
+            # Lazy Local Update logic:
+            # Re-compute spectral boundaries only when gap indicates transition
+            # or periodically.
+            if i % 5 == 0:
                 self.spec_filter.update_boundaries(ids, len(self.vocab))
 
             total_count = sum(stats.values())
@@ -43,30 +45,27 @@ class SpecTokenizer:
             max_score = -float("inf")
 
             for pair, count in stats.items():
-                # Directional PMI: p(B|A) / p(B)
                 p_B_given_A = count / id_freqs[pair[0]]
                 p_B = id_freqs[pair[1]] / total_count
                 pmi = p_B_given_A / p_B
 
-                # Spectral Penalty: -gamma * 1_{Boundary}(A, B)
                 penalty = self.gamma if self.spec_filter.is_forbidden(pair) else 0.0
 
-                # Composite SPEC score synthesis
                 # S(A->B) = (p(B|A)/p(B)) - Penalty
                 base_score = pmi - penalty
 
-                # Modulate with manifold/algebraic stability
                 s_matrix = self.matrix_scorer.score(pair)
                 s_geom = self.geom_scorer.score(pair, count, id_freqs, total_count)
                 s_alg = self.alg_scorer.score(pair)
 
+                # Final SPEC score synthesis
                 final_score = base_score * s_matrix * s_geom * s_alg
 
                 if final_score > max_score:
                     max_score = final_score
                     best_pair = pair
 
-            if best_pair is None:
+            if best_pair is None or max_score < 0:
                 break
 
             new_id = 256 + i
@@ -74,7 +73,6 @@ class SpecTokenizer:
             self.merges[best_pair] = new_id
             self.vocab[new_id] = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
 
-            # Register merge in scorers
             self.matrix_scorer.register_merge(best_pair, new_id)
             self.alg_scorer.register_merge(best_pair, new_id)
 
@@ -87,9 +85,12 @@ class SpecTokenizer:
         ids = list(text_bytes)
         while len(ids) >= 2:
             stats = get_stats(ids)
-            pair = min(stats.keys(), key=lambda p: self.merges.get(p, float("inf")))
-            if pair not in self.merges:
-                break
+            if not stats: break
+            # Greedy application of merges
+            # Find the first merge that was learned
+            candidates = [p for p in stats if p in self.merges]
+            if not candidates: break
+            pair = min(candidates, key=lambda p: self.merges[p])
             ids = merge(ids, pair, self.merges[pair])
         return ids
 
