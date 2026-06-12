@@ -13,10 +13,12 @@ class HolonomicMemory:
         identity = np.eye(2, dtype=complex)
         dist = np.linalg.norm(matrix - identity)
         # Crystallization: loops represent stable semantic crystals
+        # We reward matrices that are closer to the identity (holonomic loops)
         if dist < self.tolerance:
             self.loops[token_id] = 10.0 / (dist + 1e-6)
         else:
-            self.loops[token_id] = 1.0 / (dist + 1.0)
+            # Damped reward for non-loops
+            self.loops[token_id] = 1.0 / (1.0 + np.log1p(dist))
 
     def get_reward(self, token_id):
         return self.loops.get(token_id, 1.0)
@@ -35,12 +37,26 @@ class MatrixScorer:
     def _get_matrix(self, token_id):
         if token_id not in self.token_matrices:
             # Generate SL(2, C) matrix: det(M) = 1
+            # Using a more stable initialization via exponential of su(2) or similar
+            # For simplicity, we use a balanced random approach and normalize
             a = self.rng.standard_normal() + 1j * self.rng.standard_normal()
             b = self.rng.standard_normal() + 1j * self.rng.standard_normal()
             c = self.rng.standard_normal() + 1j * self.rng.standard_normal()
-            if abs(a) < 1e-5: a = 1.0
+
+            # Ensure 'a' is not too small for numerical stability of 'd'
+            if abs(a) < 0.1: a = (a / abs(a)) * 0.1 if abs(a) > 0 else 0.1
+
             d = (1 + b * c) / a
-            self.token_matrices[token_id] = np.array([[a, b], [c, d]], dtype=complex)
+            M = np.array([[a, b], [c, d]], dtype=complex)
+
+            # Re-normalize to ensure det(M) = 1 exactly (up to precision)
+            det = a * d - b * c
+            if abs(det) > 1e-12:
+                M = M / np.sqrt(det)
+            else:
+                M = np.eye(2, dtype=complex) # Fallback to identity
+
+            self.token_matrices[token_id] = M
             self.confidence[token_id] = 0.5
         return self.token_matrices[token_id]
 
@@ -59,7 +75,8 @@ class MatrixScorer:
         conf_A = self.confidence.get(pair[0], 0.5)
         conf_B = self.confidence.get(pair[1], 0.5)
 
-        # Operational Specific Gravity
+        # Operational Specific Gravity: reward high interaction density
+        # Specific gravity is high for matrices with large trace or small holonomy distance
         specific_gravity = float(np.abs(trace)) + 1.0 / (holonomy_dist + 1e-5)
 
         # Operational Density: reward cohesive operators
@@ -69,6 +86,12 @@ class MatrixScorer:
         M_A = self._get_matrix(pair[0])
         M_B = self._get_matrix(pair[1])
         M_new = M_A @ M_B
+
+        # Periodic re-normalization for numerical stability
+        det = np.linalg.det(M_new)
+        if abs(det - 1.0) > 1e-6 and abs(det) > 1e-12:
+            M_new = M_new / np.sqrt(det)
+
         self.token_matrices[new_id] = M_new
         self.confidence[new_id] = min(1.0, self.confidence.get(pair[0], 0.5) + self.confidence.get(pair[1], 0.5))
         self.holonomic_memory.record_loop(new_id, M_new)
@@ -102,6 +125,6 @@ class GeometricPressureScorer:
         dist = d_fr_bernoulli(p_B, p_B_given_A) + d_fr_bernoulli(p_A, p_A_given_B)
 
         # Informational Specific Gravity: Preference for sharp, dense probability peaks.
-        entropy = -p_AB * np.log(p_AB) - (1-p_AB)*np.log(1-p_AB+self.epsilon)
+        entropy = -p_AB * np.log(p_AB + self.epsilon) - (1-p_AB)*np.log(1-p_AB+self.epsilon)
 
         return (dist + 1.0) / (self.lambd * entropy + self.epsilon)

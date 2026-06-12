@@ -19,6 +19,7 @@ class SpecTokenizer:
 
         self.manifold_volume = 1.0 # Riemannian Lattice Volume
         self.field_stats = {} # ACFS: Asynchronous Computed Field Statistics
+        self.initial_alpha = 0.5 # Default alpha-blend balance
 
     def save(self, path):
         """Saves the tokenizer state to a file."""
@@ -30,6 +31,14 @@ class SpecTokenizer:
         """Loads a tokenizer state from a file."""
         with open(path, 'rb') as f:
             return pickle.load(f)
+
+    def _heisenberg_detection(self, ids):
+        """Formal Heisenberg Detection: alpha-blend pre-scan."""
+        if not ids: return 0.5
+        xi = self.alg_scorer.get_chaos_index(ids)
+        # Higher chaos -> more frequency-based (alpha), Lower chaos -> more structural (spinor)
+        self.initial_alpha = np.clip(xi / 10.0, 0.1, 0.9)
+        return self.initial_alpha
 
     def _riemannian_expansion(self, xi):
         expansion_rate = np.log(xi + 1.0) / 20.0 # Damped expansion for stability
@@ -69,6 +78,9 @@ class SpecTokenizer:
 
         ids = list(text_bytes)
 
+        # Heisenberg Detection
+        alpha_base = self._heisenberg_detection(ids)
+
         probe_sample = ids[:100]
         self.spec_filter.update_boundaries(probe_sample, len(self.vocab))
         self.spec_filter.ph_scorer.probe_typology(probe_sample, self.spec_filter.co_occurrence_graph)
@@ -90,10 +102,10 @@ class SpecTokenizer:
                     self._riemannian_expansion(xi)
                     if self._topological_rupture(ids):
                         stats = get_stats(ids)
-                alpha = min(1.0, xi / 10.0)
+                alpha = np.clip((alpha_base + xi / 10.0) / 2.0, 0.0, 1.0)
             else:
                 xi = 0.0
-                alpha = 0.0
+                alpha = alpha_base
                 id_freqs = {idx: count * len(ids) for idx, count in self.field_stats.items()}
 
             total_count = sum(stats.values())
