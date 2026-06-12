@@ -5,6 +5,9 @@ from scipy.sparse.linalg import eigsh
 from ripser import ripser
 
 class TypologicalAtlas:
+    """
+    A library of pre-computed persistent homologies for diverse language types.
+    """
     def __init__(self):
         self.priors = {
             "isolating": {"dim": 0.5, "barcode_signature": 0.1, "entropy_target": 0.8},
@@ -27,6 +30,7 @@ class PersistentHomologyScorer:
         self.atlas = TypologicalAtlas()
         self.current_prior = self.atlas.priors["isolating"]
         self.current_topology_name = "isolating"
+        self.warp_factor = 1.0 # Diffeomorphic Warping
 
     def calculate_fractal_dimension(self, ids):
         if len(ids) < 10: return 0.5
@@ -60,6 +64,11 @@ class PersistentHomologyScorer:
         f_dim = self.calculate_fractal_dimension(ids)
         p_sig = self.get_persistence_signature(G)
         name, prior = self.atlas.get_closest_prior(f_dim, p_sig)
+
+        # Diffeomorphic Warping: Stretch the warp factor based on distance from prior
+        dist = np.sqrt((prior["dim"] - f_dim)**2 + (prior["barcode_signature"] - p_sig)**2)
+        self.warp_factor = 1.0 + dist
+
         self.current_topology_name = name
         self.current_prior = prior
         return name
@@ -85,12 +94,9 @@ class SpectralFilter:
                 G.add_edge(u, v, weight=1)
 
         current_edges = G.number_of_edges()
-
-        # Lazy Update Check
         if not force and self.last_edge_count > 0:
             change = abs(current_edges - self.last_edge_count) / self.last_edge_count
             if change < self.update_threshold:
-                # Still need to store the graph for PH probing
                 self.co_occurrence_graph = G
                 return
 
@@ -119,7 +125,11 @@ class SpectralFilter:
     def get_penalty(self, pair):
         if pair not in self.boundaries:
             return 0.0
-        tunnel_factor = 1.5 if self.ph_scorer.current_topology_name == "agglutinative" else 1.0
+
+        # Warp the tunneling based on typology and PH warp factor
+        tunnel_prior = 1.5 if self.ph_scorer.current_topology_name == "agglutinative" else 1.0
+        tunnel_factor = tunnel_prior * self.ph_scorer.warp_factor
+
         p_merge = np.exp(-1.0 / (self.pi * tunnel_factor + 1e-5))
         return 1.0 - p_merge
 
