@@ -3,13 +3,14 @@ import networkx as nx
 
 class SpectralFilter:
     """
-    Negato-Spectral BPE with Renormalization Group (RG) Flow monitoring.
-    Monitors the Spectral Gap (lambda_2 - lambda_1) to prevent over-tokenization.
+    Negato-Spectral BPE with Stochastic Boundary Tunneling.
+    Allows merging across structural boundaries under high Social Pressure (Pi).
     """
-    def __init__(self, gap_threshold=0.01):
+    def __init__(self, gap_threshold=0.01, pi=0.1):
         self.boundaries = set()
         self.spectral_gap = 1.0
         self.gap_threshold = gap_threshold
+        self.pi = pi # Social Pressure
 
     def update_boundaries(self, ids, vocab_size):
         G = nx.Graph()
@@ -27,11 +28,7 @@ class SpectralFilter:
             L = nx.laplacian_matrix(G).toarray().astype(float)
             eigenvalues, eigenvectors = np.linalg.eigh(L)
 
-            # lambda_1 is usually 0. lambda_2 is the Fiedler eigenvalue.
-            lambda_1 = eigenvalues[0]
-            lambda_2 = eigenvalues[1]
-            self.spectral_gap = lambda_2 - lambda_1
-
+            self.spectral_gap = eigenvalues[1] - eigenvalues[0]
             fiedler_vec = eigenvectors[:, 1]
             nodes = list(G.nodes())
 
@@ -46,9 +43,21 @@ class SpectralFilter:
         except Exception:
             pass
 
-    def is_forbidden(self, pair):
-        # Merge is forbidden if it crosses a boundary OR if the spectral gap collapsed
-        return (pair in self.boundaries) or (self.spectral_gap < self.gap_threshold)
+    def get_penalty(self, pair):
+        """
+        Stochastic Tunneling: Returns a probability-weighted penalty.
+        If pair in boundaries, penalty is high unless Pi is high.
+        """
+        if pair not in self.boundaries:
+            return 0.0
 
-    def get_rg_state(self):
-        return self.spectral_gap
+        # P_merge proportional to exp(-1/Pi)
+        # We return a penalty: 1 - P_merge
+        p_merge = np.exp(-1.0 / (self.pi + 1e-5))
+        return 1.0 - p_merge
+
+    def is_forbidden(self, pair):
+        # Hard block if spectral gap collapsed
+        if self.spectral_gap < self.gap_threshold:
+            return True
+        return False # We use get_penalty for boundaries instead of hard boolean

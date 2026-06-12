@@ -5,7 +5,7 @@ from .algebraic import AlgebraicScorer
 from .spectral import SpectralFilter
 
 class SpecTokenizer:
-    def __init__(self, vocab_size=300, gamma=0.5, lambd=0.1):
+    def __init__(self, vocab_size=300, gamma=1.0, lambd=0.1, pi=0.1):
         self.vocab_size = vocab_size
         self.gamma = gamma
         self.merges = {}
@@ -14,7 +14,7 @@ class SpecTokenizer:
         self.matrix_scorer = MatrixScorer()
         self.geom_scorer = GeometricPressureScorer(lambd=lambd)
         self.alg_scorer = AlgebraicScorer()
-        self.spec_filter = SpectralFilter()
+        self.spec_filter = SpectralFilter(pi=pi)
 
     def train(self, text):
         if isinstance(text, str):
@@ -30,11 +30,16 @@ class SpecTokenizer:
             if not stats:
                 break
 
-            # Lazy Local Update logic:
-            # Re-compute spectral boundaries only when gap indicates transition
-            # or periodically.
+            # Heisenberg Detection: alpha-blend (surrogate)
+            # Re-update boundaries and chaos index
             if i % 5 == 0:
                 self.spec_filter.update_boundaries(ids, len(self.vocab))
+                xi = self.alg_scorer.get_chaos_index(ids)
+                # alpha-blend: weight matrix vs pmi
+                alpha = min(1.0, xi / 10.0)
+            else:
+                xi = 0.0
+                alpha = 0.0
 
             total_count = sum(stats.values())
             id_freqs = {}
@@ -49,17 +54,21 @@ class SpecTokenizer:
                 p_B = id_freqs[pair[1]] / total_count
                 pmi = p_B_given_A / p_B
 
-                penalty = self.gamma if self.spec_filter.is_forbidden(pair) else 0.0
+                # Stochastic Spectral Penalty
+                spec_penalty = self.spec_filter.get_penalty(pair)
 
-                # S(A->B) = (p(B|A)/p(B)) - Penalty
-                base_score = pmi - penalty
+                if self.spec_filter.is_forbidden(pair):
+                    continue
+
+                base_score = pmi - self.gamma * spec_penalty
 
                 s_matrix = self.matrix_scorer.score(pair)
                 s_geom = self.geom_scorer.score(pair, count, id_freqs, total_count)
-                s_alg = self.alg_scorer.score(pair)
+                s_alg = self.alg_scorer.score(pair, xi=xi)
 
-                # Final SPEC score synthesis
-                final_score = base_score * s_matrix * s_geom * s_alg
+                # Synthesis with alpha-blend weighting
+                # High alpha (social/chaotic) -> weight PMI more
+                final_score = (alpha * pmi + (1-alpha) * s_matrix) * s_geom * s_alg
 
                 if final_score > max_score:
                     max_score = final_score
@@ -74,7 +83,7 @@ class SpecTokenizer:
             self.vocab[new_id] = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
 
             self.matrix_scorer.register_merge(best_pair, new_id)
-            self.alg_scorer.register_merge(best_pair, new_id)
+            self.alg_scorer.register_merge(best_pair, new_id, xi=xi)
 
     def encode(self, text):
         if isinstance(text, str):
@@ -86,8 +95,6 @@ class SpecTokenizer:
         while len(ids) >= 2:
             stats = get_stats(ids)
             if not stats: break
-            # Greedy application of merges
-            # Find the first merge that was learned
             candidates = [p for p in stats if p in self.merges]
             if not candidates: break
             pair = min(candidates, key=lambda p: self.merges[p])
