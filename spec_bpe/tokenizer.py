@@ -16,6 +16,22 @@ class SpecTokenizer:
         self.alg_scorer = AlgebraicScorer()
         self.spec_filter = SpectralFilter(pi=pi)
 
+        self.manifold_volume = 1.0 # Riemannian Lattice Volume
+
+    def _riemannian_expansion(self, xi):
+        """
+        Dynamically warp the vocabulary space (manifold volume)
+        to accommodate validated mutations.
+        """
+        expansion_rate = np.log(xi + 1.0) / 10.0
+        self.manifold_volume *= (1.0 + expansion_rate)
+        # Expansion reduces geometric pressure lambd
+        # Fix: Using target from prior if available, else scale
+        if hasattr(self.spec_filter.ph_scorer, 'current_prior'):
+            self.geom_scorer.lambd = self.spec_filter.ph_scorer.current_prior["entropy_target"]
+        else:
+            self.geom_scorer.lambd /= (1.0 + expansion_rate)
+
     def train(self, text):
         if isinstance(text, str):
             text_bytes = text.encode("utf-8")
@@ -25,8 +41,6 @@ class SpecTokenizer:
         ids = list(text_bytes)
         num_merges = self.vocab_size - 256
 
-        # Initial Typological Probing (Typology Atlas selection)
-        # Using first 100 tokens as suggested
         probe_sample = ids[:100]
         self.spec_filter.update_boundaries(probe_sample, len(self.vocab))
         self.spec_filter.ph_scorer.probe_typology(probe_sample, self.spec_filter.co_occurrence_graph)
@@ -36,20 +50,15 @@ class SpecTokenizer:
             if not stats:
                 break
 
-            # Heisenberg Detection: alpha-blend (surrogate)
-            # Re-update boundaries and chaos index
             if i % 5 == 0:
-                self.spec_filter.update_boundaries(ids, len(self.vocab))
+                self.spec_filter.update_boundaries(ids, len(self.vocab), force=(i==0))
                 xi = self.alg_scorer.get_chaos_index(ids)
 
-                # Sheaf-Cohomology Threshold Logic
-                # If chaos index xi spikes, we re-probe typology (Typological Shift)
+                # Sheaf-Cohomology Shift
                 if xi > 5.0:
                     self.spec_filter.ph_scorer.probe_typology(ids, self.spec_filter.co_occurrence_graph)
-                    # Dynamic adaptation of geometric pressure based on typology
-                    self.geom_scorer.lambd = self.spec_filter.ph_scorer.current_prior["entropy_target"]
+                    self._riemannian_expansion(xi)
 
-                # alpha-blend: weight matrix vs pmi
                 alpha = min(1.0, xi / 10.0)
             else:
                 xi = 0.0
@@ -68,23 +77,20 @@ class SpecTokenizer:
                 p_B = id_freqs[pair[1]] / total_count
                 pmi = p_B_given_A / p_B
 
-                # Stochastic Spectral Penalty
                 spec_penalty = self.spec_filter.get_penalty(pair)
-
                 if self.spec_filter.is_forbidden(pair):
                     continue
-
-                # base_score used for logging/debugging (not used in final synthesis here)
-                # base_score = pmi - self.gamma * spec_penalty
 
                 s_matrix = self.matrix_scorer.score(pair)
                 s_geom = self.geom_scorer.score(pair, count, id_freqs, total_count)
                 s_alg = self.alg_scorer.score(pair, xi=xi)
 
-                # Synthesis with alpha-blend weighting and spectral penalty
-                # We apply the spectral penalty to the PMI component
+                # Crystallization: Prioritize density intelligence components
+                # pmi is only a 'flat' frequency signal; we weight it by alpha
                 weighted_pmi = pmi - self.gamma * spec_penalty
-                final_score = (alpha * weighted_pmi + (1-alpha) * s_matrix) * s_geom * s_alg
+
+                # Synthesis with manifold volume scaling
+                final_score = (alpha * weighted_pmi + (1-alpha) * s_matrix) * s_geom * s_alg * self.manifold_volume
 
                 if final_score > max_score:
                     max_score = final_score
