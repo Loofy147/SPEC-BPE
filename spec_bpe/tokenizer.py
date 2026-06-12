@@ -25,6 +25,12 @@ class SpecTokenizer:
         ids = list(text_bytes)
         num_merges = self.vocab_size - 256
 
+        # Initial Typological Probing (Typology Atlas selection)
+        # Using first 100 tokens as suggested
+        probe_sample = ids[:100]
+        self.spec_filter.update_boundaries(probe_sample, len(self.vocab))
+        self.spec_filter.ph_scorer.probe_typology(probe_sample, self.spec_filter.co_occurrence_graph)
+
         for i in range(num_merges):
             stats = get_stats(ids)
             if not stats:
@@ -35,6 +41,14 @@ class SpecTokenizer:
             if i % 5 == 0:
                 self.spec_filter.update_boundaries(ids, len(self.vocab))
                 xi = self.alg_scorer.get_chaos_index(ids)
+
+                # Sheaf-Cohomology Threshold Logic
+                # If chaos index xi spikes, we re-probe typology (Typological Shift)
+                if xi > 5.0:
+                    self.spec_filter.ph_scorer.probe_typology(ids, self.spec_filter.co_occurrence_graph)
+                    # Dynamic adaptation of geometric pressure based on typology
+                    self.geom_scorer.lambd = self.spec_filter.ph_scorer.current_prior["entropy_target"]
+
                 # alpha-blend: weight matrix vs pmi
                 alpha = min(1.0, xi / 10.0)
             else:
@@ -60,15 +74,17 @@ class SpecTokenizer:
                 if self.spec_filter.is_forbidden(pair):
                     continue
 
-                base_score = pmi - self.gamma * spec_penalty
+                # base_score used for logging/debugging (not used in final synthesis here)
+                # base_score = pmi - self.gamma * spec_penalty
 
                 s_matrix = self.matrix_scorer.score(pair)
                 s_geom = self.geom_scorer.score(pair, count, id_freqs, total_count)
                 s_alg = self.alg_scorer.score(pair, xi=xi)
 
-                # Synthesis with alpha-blend weighting
-                # High alpha (social/chaotic) -> weight PMI more
-                final_score = (alpha * pmi + (1-alpha) * s_matrix) * s_geom * s_alg
+                # Synthesis with alpha-blend weighting and spectral penalty
+                # We apply the spectral penalty to the PMI component
+                weighted_pmi = pmi - self.gamma * spec_penalty
+                final_score = (alpha * weighted_pmi + (1-alpha) * s_matrix) * s_geom * s_alg
 
                 if final_score > max_score:
                     max_score = final_score
