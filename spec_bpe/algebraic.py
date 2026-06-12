@@ -5,7 +5,7 @@ class AlgebraicScorer:
     Algebraic BPE over Finite Fields (F_p)
     Implements Galois-Hysteresis (GH) Buffer and Factorization Ambiguity.
     """
-    def __init__(self, p=251, n=8, tau_crit=1.0):
+    def __init__(self, p=251, n=8, tau_crit=5.0):
         self.p = p
         self.n = n
         self.tau_crit = tau_crit
@@ -18,9 +18,9 @@ class AlgebraicScorer:
 
     def _get_poly(self, token_id):
         if token_id not in self.token_polynomials:
-            coeffs = np.zeros(self.n, dtype=int)
-            coeffs[0] = hash(token_id) % self.p
-            coeffs[1] = (hash(token_id) >> 8) % self.p
+            # Deterministic polynomial generation based on token_id
+            state = np.random.RandomState(token_id % (2**32))
+            coeffs = state.randint(0, self.p, size=self.n)
             self.token_polynomials[token_id] = coeffs
 
         poly = self.token_polynomials[token_id]
@@ -44,11 +44,9 @@ class AlgebraicScorer:
     def check_factorization_ambiguity(self, poly):
         """
         Check if the polynomial has multiple 'stable' factorizations.
-        In this implementation, we simulate this by checking if the syndrome
-        falls into a 'dialectal resonance' zone.
         """
         syndrome = self.syndrome_check(poly)
-        # Dialectal resonance: syndrome is high but has high internal symmetry (sum of coeffs is low)
+        # Dialectal resonance zone
         if syndrome > 50 and np.sum(poly) % 10 == 0:
             return True, syndrome
         return False, syndrome
@@ -60,23 +58,20 @@ class AlgebraicScorer:
         p_a = self._get_poly(pair[0])
         p_b = self._get_poly(pair[1])
 
-        # Composition (Vectorized Polynomial Multiplication)
         p_ab = self._poly_mul(p_a, p_b)
-
         is_ambiguous, syndrome = self.check_factorization_ambiguity(p_ab)
 
-        # Structural Consultant Logic
         if is_ambiguous:
             # Preserve as a dialectal variant: High score despite high syndrome
-            return 2.0 / (np.log(syndrome + 1) + 1.0)
+            return 2.0 / (np.log1p(syndrome) + 1.0)
 
-        # Hysteresis Logic
+        # Normalized Hysteresis Logic
         if xi >= self.tau_crit:
-            # Innovation Regime
-            return 1.5 / (syndrome + 0.5)
+            # Innovation Regime: reward diversity
+            return 1.2 / (1.0 + np.log1p(syndrome))
         else:
             # Standard Regime: Hard correction towards zero syndrome
-            return 1.0 / (syndrome + 1.0)
+            return 1.0 / (1.0 + syndrome)
 
     def register_merge(self, pair, new_id, xi=0.0):
         p_a = self._get_poly(pair[0])
@@ -86,9 +81,7 @@ class AlgebraicScorer:
         is_ambiguous, syndrome = self.check_factorization_ambiguity(res)
 
         if is_ambiguous:
-            # Fork the lattice (metaphorically) by registering it as a stable mutation
             self.mutations[syndrome] = self.mutations.get(syndrome, 0) + 1
-            # In a full implementation, we would store multiple paths
             self.ambiguous_variants[new_id] = [res, (res + 1) % self.p]
         elif xi >= self.tau_crit and syndrome > 5:
             self.mutations[syndrome] = self.mutations.get(syndrome, 0) + 1
@@ -96,6 +89,7 @@ class AlgebraicScorer:
         self.token_polynomials[new_id] = res
 
     def get_chaos_index(self, input_ids):
+        if not input_ids: return 0.0
         syndromes = [self.syndrome_check(self._get_poly(idx)) for idx in input_ids]
-        if not syndromes: return 0.0
-        return float(np.std(syndromes))
+        # Better normalized chaos index: average syndrome deviation
+        return float(np.std(syndromes)) if len(syndromes) > 1 else float(syndromes[0] / 10.0)

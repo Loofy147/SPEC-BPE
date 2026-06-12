@@ -3,6 +3,7 @@ import sys
 import time
 import numpy as np
 import tiktoken
+import pandas as pd
 from transformers import AutoTokenizer
 from spec_bpe.tokenizer import SpecTokenizer
 
@@ -17,7 +18,6 @@ def calculate_compression_ratio(tokens, text):
     return bytes_len / len(tokens)
 
 def run_benchmark():
-    # Sample text: A mix of technical and general content
     sample_text = """
     The transformer architecture has revolutionized natural language processing.
     By modeling global dependencies with self-attention, these models capture
@@ -30,6 +30,8 @@ def run_benchmark():
     print("Benchmarking Tokenizers...")
     print("-" * 40)
 
+    results = []
+
     # 1. SPEC-BPE
     spec_tokenizer = SpecTokenizer(vocab_size=1000)
     start = time.time()
@@ -39,40 +41,35 @@ def run_benchmark():
     spec_tokens = spec_tokenizer.encode(sample_text)
     spec_cr = calculate_compression_ratio(spec_tokens, sample_text)
     spec_fer = calculate_fertility(spec_tokens, sample_text)
+    results.append({"Model": "SPEC-BPE", "CR": spec_cr, "Fertility": spec_fer, "Train Time (s)": train_time})
 
-    print(f"SPEC-BPE (Vocab 1000):")
-    print(f"  Training Time: {train_time:.2f}s")
-    print(f"  Compression Ratio: {spec_cr:.2f} bytes/token")
-    print(f"  Fertility: {spec_fer:.2f} tokens/word")
-    print()
-
-    # 2. Tiktoken (cl100k_base)
+    # 2. Tiktoken
     try:
         enc = tiktoken.get_encoding("cl100k_base")
         tik_tokens = enc.encode(sample_text)
         tik_cr = calculate_compression_ratio(tik_tokens, sample_text)
         tik_fer = calculate_fertility(tik_tokens, sample_text)
-        print(f"Tiktoken (cl100k_base):")
-        print(f"  Compression Ratio: {tik_cr:.2f} bytes/token")
-        print(f"  Fertility: {tik_fer:.2f} tokens/word")
-        print()
+        results.append({"Model": "Tiktoken", "CR": tik_cr, "Fertility": tik_fer, "Train Time (s)": 0.0})
     except Exception as e:
         print(f"Tiktoken benchmark failed: {e}")
 
-    # 3. Transformers GPT-2
+    # 3. GPT-2
     try:
-        # Use token explicitly
         token = os.getenv("HF_TOKEN")
         gpt2_tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2", token=token)
         gpt2_tokens = gpt2_tokenizer.encode(sample_text)
         gpt2_cr = calculate_compression_ratio(gpt2_tokens, sample_text)
         gpt2_fer = calculate_fertility(gpt2_tokens, sample_text)
-        print(f"GPT-2 (Transformers):")
-        print(f"  Compression Ratio: {gpt2_cr:.2f} bytes/token")
-        print(f"  Fertility: {gpt2_fer:.2f} tokens/word")
-        print()
+        results.append({"Model": "GPT-2", "CR": gpt2_cr, "Fertility": gpt2_fer, "Train Time (s)": 0.0})
     except Exception as e:
         print(f"GPT-2 benchmark failed: {e}")
+
+    df = pd.DataFrame(results)
+    print(df.to_string(index=False))
+
+    os.makedirs("reports", exist_ok=True)
+    df.to_csv("reports/benchmark_results.csv", index=False)
+    print(f"\nReport saved to reports/benchmark_results.csv")
 
 if __name__ == "__main__":
     run_benchmark()
