@@ -2,7 +2,6 @@ from spec_bpe.tokenizer import SpecTokenizer
 import time
 
 def standard_bpe_mock(text, vocab_size=300):
-    # A very simple mock of standard BPE (frequency based)
     from spec_bpe.utils import get_stats, merge
     ids = list(text.encode("utf-8"))
     merges = {}
@@ -39,11 +38,17 @@ def run_demo():
 
     # Show some learned merges
     print("\nSample learned merges (SPEC-BPE):")
-    for pair, idx in list(spec_tokenizer.merges.items())[:10]:
-        p0 = spec_tokenizer.vocab[pair[0]]
-        p1 = spec_tokenizer.vocab[pair[1]]
+    # Show merges that resulted in actual words/morphemes
+    shown = 0
+    for pair, idx in spec_tokenizer.merges.items():
         res = spec_tokenizer.vocab[idx]
-        print(f"  {p0} + {p1} -> {res}")
+        if len(res) > 2:
+            p0 = spec_tokenizer.vocab[pair[0]]
+            p1 = spec_tokenizer.vocab[pair[1]]
+            print(f"  {p0} + {p1} -> {res}")
+            shown += 1
+        if shown >= 10:
+            break
 
 if __name__ == "__main__":
     run_demo()

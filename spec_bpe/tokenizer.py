@@ -5,8 +5,9 @@ from .algebraic import AlgebraicScorer
 from .spectral import SpectralFilter
 
 class SpecTokenizer:
-    def __init__(self, vocab_size=300):
+    def __init__(self, vocab_size=300, gamma=0.5):
         self.vocab_size = vocab_size
+        self.gamma = gamma # Boundary penalty hyperparameter
         self.merges = {} # (int, int) -> int
         self.vocab = {i: bytes([i]) for i in range(256)}
 
@@ -39,26 +40,30 @@ class SpecTokenizer:
                 id_freqs[idx] = id_freqs.get(idx, 0) + 1
 
             best_pair = None
-            max_score = -1.0
+            max_score = -float("inf")
 
             for pair, count in stats.items():
-                if self.spec_filter.is_forbidden(pair):
-                    continue
+                # Directional PMI: p(B|A) / p(B)
+                p_B_given_A = count / id_freqs[pair[0]]
+                p_B = id_freqs[pair[1]] / total_count
+                pmi = p_B_given_A / p_B
 
-                # Directional PMI (Simplified)
-                # p(B|A) / p(B) = (count / freq(A)) / (freq(B) / total)
-                pmi = (count / id_freqs[pair[0]]) / (id_freqs[pair[1]] / total_count)
+                # Spectral Penalty: -gamma * 1_{Boundary}(A, B)
+                penalty = self.gamma if self.spec_filter.is_forbidden(pair) else 0.0
 
-                # Composite Score
+                # Composite SPEC score synthesis
+                # S(A->B) = (p(B|A)/p(B)) - Penalty
+                base_score = pmi - penalty
+
+                # Modulate with manifold/algebraic stability
                 s_matrix = self.matrix_scorer.score(pair)
                 s_geom = self.geom_scorer.score(pair, count, id_freqs, total_count)
                 s_alg = self.alg_scorer.score(pair)
 
-                # Final SPEC score
-                score = pmi * s_matrix * s_geom * s_alg
+                final_score = base_score * s_matrix * s_geom * s_alg
 
-                if score > max_score:
-                    max_score = score
+                if final_score > max_score:
+                    max_score = final_score
                     best_pair = pair
 
             if best_pair is None:
@@ -69,7 +74,7 @@ class SpecTokenizer:
             self.merges[best_pair] = new_id
             self.vocab[new_id] = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
 
-            # Register merge in scorers if needed
+            # Register merge in scorers
             self.matrix_scorer.register_merge(best_pair, new_id)
             self.alg_scorer.register_merge(best_pair, new_id)
 

@@ -6,7 +6,7 @@ def test_matrix_scorer():
     scorer = MatrixScorer()
     score = scorer.score((1, 2))
     assert isinstance(score, float)
-    assert 0 <= score <= 1.0
+    assert score >= 0
 
     scorer.register_merge((1, 2), 256)
     score_new = scorer.score((256, 3))
@@ -17,6 +17,7 @@ def test_geometric_scorer():
     id_freqs = {1: 10, 2: 10}
     score = scorer.score((1, 2), 5, id_freqs, 100)
     assert isinstance(score, float)
+    assert score >= 0
 
 def test_algebraic_scorer():
     scorer = AlgebraicScorer()

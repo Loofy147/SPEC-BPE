@@ -3,40 +3,46 @@ import numpy as np
 class AlgebraicScorer:
     """
     Algebraic BPE over Finite Fields (F_p)
-    Maps tokens to elements of F_251.
+    Maps tokens to polynomials P(x) in F_p[x] / (x^n - 1).
     A merge is defined as a "Factorization" or "Minimal Polynomial" logic.
     """
-    def __init__(self, p=251):
+    def __init__(self, p=251, n=8):
         self.p = p
-        self.token_values = {}
+        self.n = n # Depth of subword abstraction
+        self.token_polynomials = {}
 
-    def _get_val(self, token_id):
-        if token_id not in self.token_values:
-            # Map to an element in F_p
-            # For simplicity, use hash modulo p
-            self.token_values[token_id] = hash(token_id) % self.p
-        return self.token_values[token_id]
+    def _get_poly(self, token_id):
+        if token_id not in self.token_polynomials:
+            # Map token to a small polynomial in F_p[x]
+            # Represented as an array of coefficients
+            coeffs = np.zeros(self.n, dtype=int)
+            coeffs[0] = hash(token_id) % self.p
+            coeffs[1] = (hash(token_id) >> 8) % self.p
+            self.token_polynomials[token_id] = coeffs
+        return self.token_polynomials[token_id]
 
     def score(self, pair):
-        v_a = self._get_val(pair[0])
-        v_b = self._get_val(pair[1])
+        p_a = self._get_poly(pair[0])
+        p_b = self._get_poly(pair[1])
 
-        # A merge is "condensed" if it forms a specific algebraic relation.
-        # Here we model "common roots" by checking if (v_a + v_b) has a high-degree
-        # of symmetry or resides in a specific sub-field (simulated via modulo).
+        # A merge is "condensed" if it forms a common root or minimal polynomial.
+        # We simulate this by checking the norm of the polynomial sum in F_p.
+        res = (p_a + p_b) % self.p
+        norm = np.sum(res**2) % self.p
 
-        # Minimal polynomial surrogate:
-        # Is (v_a * v_b) + (v_a + v_b) prime in F_p?
-        # (Very rough approximation of "irreducible" or "minimal" units)
-        val = (v_a * v_b + v_a + v_b) % self.p
-
-        # We prefer "primitive" elements or elements that "factorize" nicely.
-        # Score = 1.0 if val is in a "stable" subset of F_p.
-        if val in [0, 1, 2, 3, 5, 7, 11, 13]: # Small primes/roots
+        # We prefer "primitive" elements (non-zero norm)
+        if norm != 0:
             return 2.0
         return 1.0
 
     def register_merge(self, pair, new_id):
-        v_a = self._get_val(pair[0])
-        v_b = self._get_val(pair[1])
-        self.token_values[new_id] = (v_a * v_b) % self.p
+        p_a = self._get_poly(pair[0])
+        p_b = self._get_poly(pair[1])
+
+        # Composition in the field: convolution (polynomial multiplication)
+        # mod (x^n - 1)
+        res = np.zeros(self.n, dtype=int)
+        for i in range(self.n):
+            for j in range(self.n):
+                res[(i + j) % self.n] = (res[(i + j) % self.n] + p_a[i] * p_b[j]) % self.p
+        self.token_polynomials[new_id] = res
