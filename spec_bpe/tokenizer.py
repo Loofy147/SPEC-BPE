@@ -1,11 +1,12 @@
 import numpy as np
+import pickle
 from .utils import get_stats, merge
 from .scoring import MatrixScorer, GeometricPressureScorer
 from .algebraic import AlgebraicScorer
 from .spectral import SpectralFilter
 
 class SpecTokenizer:
-    def __init__(self, vocab_size=300, gamma=1.0, lambd=0.1, pi=0.1):
+    def __init__(self, vocab_size=300, gamma=0.5, lambd=0.05, pi=0.2):
         self.vocab_size = vocab_size
         self.gamma = gamma
         self.merges = {}
@@ -19,8 +20,19 @@ class SpecTokenizer:
         self.manifold_volume = 1.0 # Riemannian Lattice Volume
         self.field_stats = {} # ACFS: Asynchronous Computed Field Statistics
 
+    def save(self, path):
+        """Saves the tokenizer state to a file."""
+        with open(path, 'wb') as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load(cls, path):
+        """Loads a tokenizer state from a file."""
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+
     def _riemannian_expansion(self, xi):
-        expansion_rate = np.log(xi + 1.0) / 10.0
+        expansion_rate = np.log(xi + 1.0) / 20.0 # Damped expansion for stability
         self.manifold_volume *= (1.0 + expansion_rate)
         if hasattr(self.spec_filter.ph_scorer, 'current_prior'):
             self.geom_scorer.lambd = self.spec_filter.ph_scorer.current_prior["entropy_target"]
