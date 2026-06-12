@@ -47,8 +47,26 @@ class PersistentHomologyScorer:
     def get_persistence_signature(self, G):
         if len(G) < 3: return 0.0
         try:
-            path_lengths = nx.floyd_warshall_numpy(G, weight='weight')
-            path_lengths = np.nan_to_num(path_lengths, nan=1e3)
+            # Efficient shortest path calculation using Dijkstra for larger graphs
+            # We sample a subset of nodes if the graph is too large to stay efficient
+            nodes = list(G.nodes())
+            if len(nodes) > 100:
+                sampled_nodes = np.random.choice(nodes, 100, replace=False)
+                # Compute distances between sampled nodes only
+                path_lengths_dict = {}
+                for source in sampled_nodes:
+                    lengths = nx.single_source_dijkstra_path_length(G, source, weight='weight')
+                    path_lengths_dict[source] = {target: lengths.get(target, 1e3) for target in sampled_nodes}
+
+                size = len(sampled_nodes)
+                path_lengths = np.zeros((size, size))
+                for i, u in enumerate(sampled_nodes):
+                    for j, v in enumerate(sampled_nodes):
+                        path_lengths[i, j] = path_lengths_dict[u][v]
+            else:
+                path_lengths = nx.floyd_warshall_numpy(G, weight='weight')
+                path_lengths = np.nan_to_num(path_lengths, nan=1e3)
+
             path_lengths[path_lengths > 1e3] = 1e3
             dgms = ripser(path_lengths, distance_matrix=True)['dgms']
             if len(dgms) > 1 and len(dgms[1]) > 0:

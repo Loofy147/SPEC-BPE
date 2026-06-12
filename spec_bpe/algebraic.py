@@ -13,20 +13,33 @@ class AlgebraicScorer:
         self.mutations = {} # Syndrome -> Count
         self.ambiguous_variants = {} # token_id -> [alternate_polynomials]
 
+        # Pre-compute indices for vectorized cyclic multiplication
+        self._indices = (np.arange(self.n)[:, None] - np.arange(self.n)) % self.n
+
     def _get_poly(self, token_id):
         if token_id not in self.token_polynomials:
             coeffs = np.zeros(self.n, dtype=int)
             coeffs[0] = hash(token_id) % self.p
             coeffs[1] = (hash(token_id) >> 8) % self.p
             self.token_polynomials[token_id] = coeffs
-        return self.token_polynomials[token_id]
+
+        poly = self.token_polynomials[token_id]
+        if not isinstance(poly, np.ndarray):
+            poly = np.array(poly, dtype=int)
+            self.token_polynomials[token_id] = poly
+        return poly
+
+    def _poly_mul(self, p_a, p_b):
+        """Vectorized cyclic polynomial multiplication over F_p."""
+        mat = p_a[self._indices]
+        return (mat @ p_b) % self.p
 
     def syndrome_check(self, poly):
-        alpha = 2
-        val = 0
-        for i, coeff in enumerate(poly):
-            val = (val + coeff * (alpha**i)) % self.p
-        return val
+        """Syndrome evaluation using primitive root alpha=6."""
+        alpha = 6
+        powers = np.power(alpha, np.arange(self.n), dtype=object) % self.p
+        val = np.sum(poly * powers.astype(int)) % self.p
+        return int(val)
 
     def check_factorization_ambiguity(self, poly):
         """
@@ -47,11 +60,8 @@ class AlgebraicScorer:
         p_a = self._get_poly(pair[0])
         p_b = self._get_poly(pair[1])
 
-        # Composition (Polynomial Multiplication)
-        p_ab = np.zeros(self.n, dtype=int)
-        for i in range(self.n):
-            for j in range(self.n):
-                p_ab[(i + j) % self.n] = (p_ab[(i + j) % self.n] + p_a[i] * p_b[j]) % self.p
+        # Composition (Vectorized Polynomial Multiplication)
+        p_ab = self._poly_mul(p_a, p_b)
 
         is_ambiguous, syndrome = self.check_factorization_ambiguity(p_ab)
 
@@ -71,10 +81,7 @@ class AlgebraicScorer:
     def register_merge(self, pair, new_id, xi=0.0):
         p_a = self._get_poly(pair[0])
         p_b = self._get_poly(pair[1])
-        res = np.zeros(self.n, dtype=int)
-        for i in range(self.n):
-            for j in range(self.n):
-                res[(i + j) % self.n] = (res[(i + j) % self.n] + p_a[i] * p_b[j]) % self.p
+        res = self._poly_mul(p_a, p_b)
 
         is_ambiguous, syndrome = self.check_factorization_ambiguity(res)
 
