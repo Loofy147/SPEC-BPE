@@ -1,6 +1,6 @@
 import numpy as np
 import pickle
-from .utils import get_stats, merge
+from .utils import get_stats, merge, FastBPE
 from .scoring import MatrixScorer, GeometricPressureScorer
 from .algebraic import AlgebraicScorer
 from .spectral import SpectralFilter
@@ -36,28 +36,22 @@ class SpecTokenizer:
         """Formal Heisenberg Detection: alpha-blend pre-scan."""
         if not ids: return 0.5
         xi = self.alg_scorer.get_chaos_index(ids)
-        # Better normalized alpha: [0.1, 0.9]
         self.initial_alpha = np.clip(1.0 - (xi / 30.0), 0.1, 0.9)
         return self.initial_alpha
 
     def _riemannian_expansion(self, xi):
-        # Damped expansion with upper bound to ensure stability
         expansion_rate = np.log(xi + 1.0) / 50.0
         self.manifold_volume = min(100.0, self.manifold_volume * (1.0 + expansion_rate))
 
         if hasattr(self.spec_filter.ph_scorer, 'current_prior'):
-            # Adaptive lambda based on entropy target of the detected prior
             target_entropy = self.spec_filter.ph_scorer.current_prior["entropy_target"]
             self.geom_scorer.lambd = np.clip(target_entropy, 0.01, 1.0)
-        else:
-            self.geom_scorer.lambd /= (1.0 + expansion_rate)
 
     def _topological_rupture(self, ids):
         distortion_threshold = 10.0
         ruptures = []
         for pair, new_id in list(self.merges.items()):
             s_alg = self.alg_scorer.score(pair)
-            # High syndrome/distortion triggers rupture
             if (1.0 / (s_alg + 1e-6)) > distortion_threshold:
                 ruptures.append((pair, new_id))
 
@@ -76,22 +70,20 @@ class SpecTokenizer:
         self.field_stats = {idx: count / total for idx, count in freqs.items()}
         return freqs
 
-    def train(self, text):
+    def train(self, text, incremental=False):
         if isinstance(text, str):
             text_bytes = text.encode("utf-8")
         else:
             text_bytes = text
 
         ids = list(text_bytes)
-
-        # Heisenberg Detection
         alpha_base = self._heisenberg_detection(ids)
 
-        probe_sample = ids[:min(200, len(ids))]
-        self.spec_filter.update_boundaries(probe_sample, len(self.vocab))
-        self.spec_filter.ph_scorer.probe_typology(probe_sample, self.spec_filter.co_occurrence_graph)
+        if not incremental:
+            probe_sample = ids[:min(200, len(ids))]
+            self.spec_filter.update_boundaries(probe_sample, len(self.vocab))
+            self.spec_filter.ph_scorer.probe_typology(probe_sample, self.spec_filter.co_occurrence_graph)
 
-        # Train until we reach vocab_size
         while len(self.vocab) < self.vocab_size:
             stats = get_stats(ids)
             if not stats:
@@ -109,7 +101,6 @@ class SpecTokenizer:
                     if self._topological_rupture(ids):
                         stats = get_stats(ids)
 
-                # Dynamic alpha update
                 alpha = np.clip(alpha_base * (1.0 - xi/100.0), 0.05, 0.95)
             else:
                 xi = 0.0
@@ -120,6 +111,7 @@ class SpecTokenizer:
             best_pair = None
             max_score = -float("inf")
 
+            # Sequential scoring to avoid ThreadPoolExecutor overhead for small tasks
             for pair, count in stats.items():
                 if pair[0] not in self.vocab or pair[1] not in self.vocab:
                     continue
@@ -137,7 +129,6 @@ class SpecTokenizer:
                 s_alg = self.alg_scorer.score(pair, xi=xi)
 
                 weighted_pmi = pmi - self.gamma * spec_penalty
-                # Composite Score Synthesis
                 final_score = (alpha * weighted_pmi + (1-alpha) * s_matrix) * s_geom * s_alg * self.manifold_volume
 
                 if final_score > max_score:
@@ -145,7 +136,6 @@ class SpecTokenizer:
                     best_pair = pair
 
             if best_pair is None or max_score < -1e3:
-                # Optimized Fallback: Pick most frequent that isn't forbidden
                 valid_pairs = [(p, c) for p, c in stats.items() if p[0] in self.vocab and p[1] in self.vocab and not self.spec_filter.is_forbidden(p)]
                 if valid_pairs:
                     best_pair = max(valid_pairs, key=lambda x: x[1])[0]
@@ -156,7 +146,7 @@ class SpecTokenizer:
             while new_id in self.vocab:
                 new_id += 1
 
-            ids = merge(ids, best_pair, new_id)
+            ids = FastBPE.fast_merge(ids, best_pair, new_id)
             self.merges[best_pair] = new_id
             self.vocab[new_id] = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
 
@@ -191,6 +181,5 @@ class SpecTokenizer:
         return ids
 
     def decode(self, ids):
-        # Filter out ids not in vocab to prevent crashes
         text_bytes = b"".join(self.vocab[idx] for idx in ids if idx in self.vocab)
         return text_bytes.decode("utf-8", errors="replace")
