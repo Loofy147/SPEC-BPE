@@ -2,3 +2,9 @@ numpy
 scipy
 networkx
 ripser
+transformers
+datasets
+tiktoken
+pandas
+tqdm
+matplotlib

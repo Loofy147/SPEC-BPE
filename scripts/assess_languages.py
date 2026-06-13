@@ -23,7 +23,7 @@ def run_assessment():
 
         for lang_name, text in languages.items():
             print(f"\nAssessing {lang_name}...")
-            tokenizer.train(text * 5)
+            tokenizer.train(text * 20)
 
             ph_scorer = tokenizer.spec_filter.ph_scorer
             detected_typology = ph_scorer.current_topology_name
